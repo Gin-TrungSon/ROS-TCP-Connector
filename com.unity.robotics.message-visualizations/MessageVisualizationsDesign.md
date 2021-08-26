@@ -1,3 +1,12 @@
+# Redesign changes:
+
+Made a clean separation between Visualizations package and ROS-TCP-Connector. Now ROS-TCP-Connector only provides general purpose interfaces for subscribing to messages and receiving topic updates, plus a generic hud that offers tabs and windows that can be used for any purpose.
+Message Visualizations provides all the specific visualization logic.
+
+Each IVisual no longer represents a single message, but a single topic; as new messages are sent to it, most IVisuals will throw away the old message and visualize the new one, but the exact behaviour is up to the IVisual itself.
+
+The IVisualFactory interface changed from CreateVisual(Message) to GetOrCreateVisual(topic), reflecting that each visual is linked to a topic rather than a message. And the the "GetOr" reflects that the factory is now responsible for keeping hold of the IVisuals it has created. We now have a clear "official" way to get hold of the visual for a given topic.
+
 # Message Visualizations design
 
 The goal of this package is to provide a toolkit for users to visualize messages in whatever way suits their needs:
@@ -13,19 +22,15 @@ This gives the user a nice obvious workflow for editing visualizer settings (sel
 
 # Visualization Flow
 
-<img src="images~/MsgVizFlow.svg">
+<img src="images~/MsgVizFlow2.svg">
 
-This diagram illustrates the important components and their roles in the most common case - visualizing a message that was just sent or received. You can follow along with the code in the [UpdateVisual](https://github.com/Unity-Technologies/ROS-TCP-Connector/blob/91c1dbca71987dab30bea508bdc173a2ecb63d55/com.unity.robotics.ros-tcp-connector/Runtime/TcpConnector/RosTopicState.cs#L161) function if you're interested.
+This diagram illustrates the important components and their roles at two key times - when ROS notifies us about a new topic ([OnNewTopic](https://github.com/Unity-Technologies/ROS-TCP-Connector/blob/3772e3ad460a61d0e3ffd097ba10fa9e5f147e55/com.unity.robotics.message-visualizations/Runtime/Scripts/VisualizationTopicsTab.cs#L32)), and when a message is actually sent or received. ([UpdateVisual](https://github.com/Unity-Technologies/ROS-TCP-Connector/blob/3772e3ad460a61d0e3ffd097ba10fa9e5f147e55/com.unity.robotics.message-visualizations/Runtime/Scripts/VisualizationTopicsTabEntry.cs#L115)).
 
-1. The RosTopicState class, which represents everything to do with a specific topic within RosConnection, is notified that a message has been sent or received, and calls out to VisualFactoryRegistry to get the appropriate visualizer (IVisualFactory) for this message.
+1. The VisualizationTopicsTabEntry class, which has subscribed for updates from RosConnection, is notified that a message has been sent or received.
 
-2. Once a visualizer has been obtained, we have it create an IVisual for the given message.
+2. If necessary it creates a visual for this message, by calling out to the VisualFactoryRegistry which keeps track of all visualizers. Once a visualizer has been obtained, we have it create an IVisual for the given message. We cache the visual so that we can skip this step in future.
 
-3. Recycle the old IVisual (not shown in the diagram, for simplicity) - give the new IVisual the opportunity to reuse data and components from the old one. (This step is done for efficiency. What this means in practice is that it [steals the existing BasicDrawing and clears its contents](https://github.com/Unity-Technologies/ROS-TCP-Connector/blob/375209334c1dcda093ed22e0bffbadcf81f22cff/com.unity.robotics.message-visualizations/Runtime/Scripts/DrawingVisual.cs#L75). This optimization significantly reduces the amount of garbage collection we have to do.)
-
-3. The visual creates whatever graphical, hud or other elements are necessary.
-
-4. The visual is stored in the RosTopicState so that it can be cleaned up/recycled later when a new message is received, or hidden if the user turns off this visualization.
+3. We add the new message to this visual, and it creates or updates any graphical, hud or other elements it deems necessary.
 
 # VisualFactoryRegistry
 
@@ -42,10 +47,10 @@ https://github.com/Unity-Technologies/ROS-TCP-Connector/blob/laurie/HudRefactor/
 # IVisualFactory vs IVisual
 
 - Each visualizer implements the IVisualFactory interface. This is the type that gets registered in the VisualFactoryRegistry. IVisualFactory is responsible for creating IVisuals (as the name implies).
-- The main function in IVisualFactory is `IVisual CreateVisual(Message message, MessageMetadata meta)`. As that function signature implies, each IVisual represents the visualization of one specific message.
-- There can be many IVisuals active at once. The key idea here is that a single visualizer doesn't just show one visualization at a time. For example, maybe we have only one visualizer for Point messages, but it might be required to draw multiple points - when there are Point messages being sent on multiple topics for example.
+- The main function in IVisualFactory is `IVisual GetOrCreateVisual(string topic)`. As that function signature implies, each IVisual represents the visualization of one specific topic.
+- There can be many IVisuals active at once. The key idea here is that a single visualizer is not necessarily responsible for just one visualization at a time. For example, maybe we have only one visualizer for Point messages, but it might be required to draw multiple points, when there are Point messages being sent on multiple topics.
 
-We don't make any assumptions about what a visualization needs to do (user-defined visualizations just run arbitrary code within the Unity scene, so they can really do whatever the user wants - spawn prefabs, move objects around, play audio... whatever works), but we do provide some useful components;
+We don't make any assumptions about what a visualization needs to do (user-defined visualizations just run arbitrary code within the Unity scene, so they can really do whatever the user wants - spawn prefabs, move objects around, play audio... whatever works), but we do provide some useful components.
 
 # HudPanel and HudWindows
 
@@ -61,9 +66,8 @@ https://github.com/Unity-Technologies/ROS-TCP-Connector/blob/laurie/HudRefactor/
 - It offers functions for drawing 3d points, lines, text labels in 3d space, simple shapes (cube, sphere, cone), textured squares, arbitrary meshes and point clouds.
 - Each point in a point cloud is a billboarded quad. The billboarding is done in a shader on the GPU side, so the performance is extremely good; in tests on my laptop I was able to move around and view a static point cloud of 10 million points at an acceptable framerate. (Moving points would be a different story).
 
-# MessageVisualizations class
+# Static drawing functions
 
-https://github.com/Unity-Technologies/ROS-TCP-Connector/blob/laurie/HudRefactor/com.unity.robotics.message-visualizations/Runtime/Scripts/MessageVisualizations.cs
-- Separate from the components I've described so far, here is another important piece of the puzzle: The MessageVisualizations static class is a library of extension methods for drawing visualizations of specific messages.
-- In fact, almost all of our code for drawing messages is in this class. As far as possible none of our visualizer classes actually do any work. ([Here's a good example](https://github.com/Unity-Technologies/ROS-TCP-Connector/blob/laurie/HudRefactor/com.unity.robotics.message-visualizations/Runtime/DefaultVisualizers/Geometry/DefaultVisualizerVector3.cs)). They just define a few settings, and then forward those settings to the appropriate MessageVisualization function to do the actual drawing work.
-- The goal is for MessageVisualizations to be a library of useful visualization functions for users to build into their own visualizations.
+- Separate from the components I've described so far, here is another important piece of the puzzle: As far as possible, each of our DefaultVisualizer classes does its job in a static function that can be called by other visualizations.
+- The goal is to provide a library of useful visualization functions for users to build into their own visualizations.
+- Our visualizers also reuse each other this way. Here's a good example - https://github.com/Unity-Technologies/ROS-TCP-Connector/blob/3772e3ad460a61d0e3ffd097ba10fa9e5f147e55/com.unity.robotics.message-visualizations/Runtime/DefaultVisualizers/Geometry/TwistWithCovarianceDefaultVisualizer.cs#L24 this static function simply calls out to another visualizer to display the twist message. (In future we may add a visualization of the covariance here.)
