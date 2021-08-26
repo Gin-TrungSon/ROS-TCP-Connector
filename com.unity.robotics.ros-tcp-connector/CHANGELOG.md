@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) a
 
 ## Unreleased
 
+Add the [Close Stale Issues](https://github.com/marketplace/actions/close-stale-issues) action
+
 ### Upgrade Notes
 
 Upgrade the TestRosTcpConnector project to use Unity LTS version 2020.3.11f1
@@ -18,6 +20,8 @@ Add the Ros Tcp Connector assembly to support Universal Windows Platform
 
 Added the CameraInfoGenerator that takes a Unity Camera and a provided HeaderMsg, generate a corresponding CameraInfoMsg, see:
 [CameraInfo Generator](https://github.com/Unity-Technologies/ROS-TCP-Connector/issues/133)
+
+Add support for message visualization using multiple TF topics
 
 ### Changed
 - Publishing a message to an unregistered topic will show an error.

@@ -1,3 +1,4 @@
+using RosMessageTypes.Std;
 using System;
 using System.Collections.Generic;
 using Unity.Robotics.ROSTCPConnector;
@@ -9,24 +10,21 @@ namespace Unity.Robotics.MessageVisualizers
     public interface IVisualFactory
     {
         bool CanShowDrawing { get; }
-        IVisual CreateVisual(Message message, MessageMetadata meta);
+        IVisual GetOrCreateVisual(string topic);
     }
 
     public interface IVisual
     {
-        Message message { get; }
-        MessageMetadata meta { get; }
-        bool hasDrawing { get; }
-        bool hasAction { get; }
+        void AddMessage(Message message, MessageMetadata meta);
         void DeleteDrawing();
         void OnGUI();
         void CreateDrawing();
-        void Recycle(IVisual oldVisual);
     }
 
     public interface ITextureVisual : IVisual
     {
         Texture2D GetTexture();
+        void ListenForTextureChange(Action<Texture2D> callback);
     }
 
     public readonly struct MessageMetadata
@@ -115,38 +113,46 @@ namespace Unity.Robotics.MessageVisualizers
 
         class DefaultVisualFactory : IVisualFactory
         {
-            public IVisual CreateVisual(Message message, MessageMetadata meta)
+            Dictionary<string, IVisual> m_Visuals = new Dictionary<string, IVisual>();
+
+            public IVisual GetOrCreateVisual(string topic)
             {
-                return new DefaultVisual(message, meta);
+                IVisual visual;
+                if (m_Visuals.TryGetValue(topic, out visual))
+                    return visual;
+
+                visual = new DefaultVisual();
+                m_Visuals.Add(topic, visual);
+                return visual;
             }
 
             // If you're trying to register the default visualFactory, something has gone extremely wrong...
             public void Register(int priority) { throw new NotImplementedException(); }
+
             public bool CanShowDrawing => false;
-        }
 
-        class DefaultVisual : IVisual
-        {
-            public Message message { get; }
-            public MessageMetadata meta { get; }
-            public bool hasDrawing => false;
-            public bool hasAction => true;
-
-            public DefaultVisual(Message newMessage, MessageMetadata newMeta)
+            class DefaultVisual : IVisual
             {
-                message = newMessage;
-                meta = newMeta;
-            }
+                public Message message { get; private set; }
+                public MessageMetadata meta { get; private set; }
+                public bool hasDrawing => false;
+                public bool hasAction => true;
 
-            public void OnGUI()
-            {
-                string text = message.ToString();
-                GUILayout.Label(text);
-            }
+                public void AddMessage(Message newMessage, MessageMetadata newMeta)
+                {
+                    message = newMessage;
+                    meta = newMeta;
+                }
 
-            public void CreateDrawing() { }
-            public void DeleteDrawing() { }
-            public void Recycle(IVisual oldVisual) { }
+                public void OnGUI()
+                {
+                    string text = message.ToString();
+                    GUILayout.Label(text);
+                }
+
+                public void CreateDrawing() { }
+                public void DeleteDrawing() { }
+            }
         }
     }
 }

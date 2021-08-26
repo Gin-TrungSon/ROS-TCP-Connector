@@ -52,6 +52,10 @@ namespace Unity.Robotics.ROSTCPConnector
         bool m_ShowHUD = true;
         public bool ShowHud { get => m_ShowHUD; set => m_ShowHUD = value; }
 
+        [SerializeField]
+        string[] m_TFTopics = { "/tf" };
+        public string[] TFTopics { get => m_TFTopics; set => m_TFTopics = value; }
+
         const string k_SysCommand_Log = "__log";
         const string k_SysCommand_Warning = "__warn";
         const string k_SysCommand_Error = "__error";
@@ -91,7 +95,6 @@ namespace Unity.Robotics.ROSTCPConnector
         float m_LastMessageSentRealtime;
         public float LastMessageReceivedRealtime => m_LastMessageReceivedRealtime;
         public float LastMessageSentRealtime => m_LastMessageSentRealtime;
-        string LayoutFilePath => System.IO.Path.Combine(Application.persistentDataPath, "RosHudLayout.json");
 
         // For the IP address field we show in the hud, we store the IP address and port in PlayerPrefs.
         // This is used to remember the last IP address the player typed into the HUD, in builds where ConnectOnStart is not checked
@@ -110,13 +113,30 @@ namespace Unity.Robotics.ROSTCPConnector
         MessageDeserializer m_MessageDeserializer = new MessageDeserializer();
         List<Action<string[]>> m_TopicsListCallbacks = new List<Action<string[]>>();
         List<Action<Dictionary<string, string>>> m_TopicsAndTypesListCallbacks = new List<Action<Dictionary<string, string>>>();
+        List<Action<RosTopicState>> m_NewTopicCallbacks = new List<Action<RosTopicState>>();
 
         Dictionary<string, RosTopicState> m_Topics = new Dictionary<string, RosTopicState>();
+
+        public void ListenForTopics(Action<RosTopicState> callback, bool notifyAllExistingTopics = false)
+        {
+            m_NewTopicCallbacks.Add(callback);
+            if (notifyAllExistingTopics)
+            {
+                foreach (RosTopicState state in m_Topics.Values)
+                {
+                    callback(state);
+                }
+            }
+        }
 
         public RosTopicState AddTopic(string topic, string rosMessageName)
         {
             RosTopicState newTopic = new RosTopicState(topic, rosMessageName, this, new InternalAPI(this));
             m_Topics.Add(topic, newTopic);
+            foreach (Action<RosTopicState> callback in m_NewTopicCallbacks)
+            {
+                callback(newTopic);
+            }
             return newTopic;
         }
 
@@ -131,14 +151,14 @@ namespace Unity.Robotics.ROSTCPConnector
 
         public RosTopicState GetOrCreateTopic(string topic, string rosMessageName)
         {
-            RosTopicState info = GetTopic(topic);
-            if (info != null)
+            RosTopicState state = GetTopic(topic);
+            if (state != null)
             {
-                if (info.RosMessageName != rosMessageName)
+                if (state.RosMessageName != rosMessageName)
                 {
-                    info.ChangeRosMessageName(rosMessageName);
+                    state.ChangeRosMessageName(rosMessageName);
                 }
-                return info;
+                return state;
             }
 
             return AddTopic(topic, rosMessageName);
@@ -182,9 +202,10 @@ namespace Unity.Robotics.ROSTCPConnector
         }
 
         // Implement a service in Unity
-        public void ImplementService<REQUEST>(string topic, Func<REQUEST, Message> callback) where REQUEST : Message
+        public void ImplementService<TRequest>(string topic, Func<TRequest, Message> callback)
+            where TRequest : Message
         {
-            string rosMessageName = rosMessageName = MessageRegistry.GetRosMessageName<REQUEST>();
+            string rosMessageName = rosMessageName = MessageRegistry.GetRosMessageName<TRequest>();
 
             RosTopicState info;
             if (!m_Topics.TryGetValue(topic, out info))
@@ -192,7 +213,7 @@ namespace Unity.Robotics.ROSTCPConnector
                 info = AddTopic(topic, rosMessageName);
             }
 
-            info.ImplementService((Message msg) => callback((REQUEST)msg));
+            info.ImplementService((Message msg) => callback((TRequest)msg));
         }
 
         // Send a request to a ros service
@@ -225,7 +246,7 @@ namespace Unity.Robotics.ROSTCPConnector
             }
 
             SendSysCommand(k_SysCommand_ServiceRequest, new SysCommand_Service { srv_id = srvID });
-            Send(rosServiceName, serviceRequest);
+            SendInternal(rosServiceName, serviceRequest);
 
             byte[] rawResponse = (byte[])await pauser.PauseUntilResumed();
 
@@ -276,7 +297,6 @@ namespace Unity.Robotics.ROSTCPConnector
         public void RegisterUnityService(string topic, string rosMessageName)
         {
         }
-
 
         internal struct InternalAPI
         {
@@ -361,13 +381,13 @@ namespace Unity.Robotics.ROSTCPConnector
         {
             if (_instance == null)
                 _instance = this;
-
-            LoadLayout();
         }
 
         void Start()
         {
             InitializeHUD();
+
+            HudPanel.RegisterHeader(DrawHeaderGUI);
 
             if (listenForTFMessages)
                 TFSystem.GetOrCreateInstance();
@@ -382,21 +402,11 @@ namespace Unity.Robotics.ROSTCPConnector
             RosPort = port;
             Connect();
         }
-        public enum HudTabIndices
-        {
-            Topics = -3,
-            TF = -2,
-            Layout = -1
-        }
 
         public void Connect()
         {
             if (!IPFormatIsCorrect(RosIPAddress))
                 Debug.LogWarning("Invalid ROS IP address: " + RosIPAddress);
-
-            HudPanel.RegisterHeader(DrawHeaderGUI);
-            HudPanel.RegisterTab(new RosTopicsTab(this), (int)HudTabIndices.Topics);
-            HudPanel.RegisterTab(new VisualizerLayoutTab(this), (int)HudTabIndices.Layout);
 
             m_ConnectionThreadCancellation = new CancellationTokenSource();
 
@@ -534,7 +544,7 @@ namespace Unity.Robotics.ROSTCPConnector
 
                             // send the response message back
                             SendSysCommand(k_SysCommand_ServiceResponse, new SysCommand_Service { srv_id = serviceCommand.srv_id });
-                            Send(serviceTopic, responseMessage);
+                            SendInternal(serviceTopic, responseMessage);
                         };
                     }
                     break;
@@ -750,7 +760,6 @@ namespace Unity.Robotics.ROSTCPConnector
 
         void OnApplicationQuit()
         {
-            SaveLayout();
             Disconnect();
         }
 
@@ -804,6 +813,11 @@ namespace Unity.Robotics.ROSTCPConnector
 
         public void Send<T>(string rosTopicName, T message) where T : Message
         {
+            Publish(rosTopicName, message);
+        }
+
+        public void Publish<T>(string rosTopicName, T message) where T : Message
+        {
             if (!rosTopicName.StartsWith("__"))
             {
                 RosTopicState rosTopic = GetTopic(rosTopicName);
@@ -813,7 +827,11 @@ namespace Unity.Robotics.ROSTCPConnector
                 m_LastMessageReceivedRealtime = Time.realtimeSinceStartup;
                 rosTopic.OnMessageSent(message);
             }
+            SendInternal(rosTopicName, message);
+        }
 
+        void SendInternal<T>(string rosTopicName, T message) where T : Message
+        {
             m_MessageSerializer.Clear();
             // ros messages sent on our network channel contain:
             // 4 byte topic length, followed by that many bytes of the topic name
@@ -822,71 +840,6 @@ namespace Unity.Robotics.ROSTCPConnector
             m_MessageSerializer.SerializeMessageWithLength(message);
 
             m_OutgoingMessages.Enqueue(m_MessageSerializer.GetBytesSequence());
-        }
-
-
-
-        //============ HUD logic =================
-        class HUDLayoutSave
-        {
-            public RosTopicState.SaveState[] Rules;
-
-            public void AddRules(IEnumerable<RosTopicState> rules)
-            {
-                var topicRuleSaves = new List<RosTopicState.SaveState>();
-                foreach (var rule in rules)
-                {
-                    if (rule == null)
-                        continue;
-                    var save = rule.CreateSaveState();
-                    if (save != null)
-                        topicRuleSaves.Add(save);
-                }
-
-                Rules = topicRuleSaves.ToArray();
-            }
-        }
-
-        public void SaveLayout(string path = "")
-        {
-            // Print filepath if saving to user-input path; default to persistentDataPath
-            if (path.Length > 0)
-            {
-                Debug.Log($"Saved visualizations layout to {path}");
-            }
-            else
-            {
-                path = LayoutFilePath;
-            }
-
-            HUDLayoutSave saveState = new HUDLayoutSave { };
-            saveState.AddRules(m_Topics.Values);
-            System.IO.File.WriteAllText(path, JsonUtility.ToJson(saveState));
-        }
-
-        public void LoadLayout(string path = "")
-        {
-            if (path.Length > 0)
-            {
-                Debug.Log($"Loaded visualizations layout from {path}");
-            }
-            else
-            {
-                path = LayoutFilePath;
-            }
-
-            if (System.IO.File.Exists(path))
-            {
-                LoadLayout(JsonUtility.FromJson<HUDLayoutSave>(System.IO.File.ReadAllText(path)));
-            }
-        }
-
-        void LoadLayout(HUDLayoutSave saveState)
-        {
-            foreach (var savedRule in saveState.Rules)
-            {
-                m_Topics[savedRule.Topic] = new RosTopicState(savedRule, this, new InternalAPI(this));
-            }
         }
 
         private void InitializeHUD()

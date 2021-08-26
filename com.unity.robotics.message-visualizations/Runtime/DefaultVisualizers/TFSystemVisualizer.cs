@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace Unity.Robotics.MessageVisualizers
 {
-    public class TFSystemVisualizer : MonoBehaviour, ITFSystemVisualizer, ROSTCPConnector.IHudTab
+    public class TFSystemVisualizer : MonoBehaviour, IHudTab
     {
         public float axesScale = 0.1f;
         public float lineThickness = 0.01f;
@@ -15,9 +15,8 @@ namespace Unity.Robotics.MessageVisualizers
 
         public void Start()
         {
-            ROSConnection.GetOrCreateInstance();
-            HudPanel.RegisterTab(this, (int)ROSConnection.HudTabIndices.TF);
-            TFSystem.Register(this);
+            TFSystem.GetOrCreateInstance().AddListener(OnChanged);
+            HudPanel.RegisterTab(this, (int)HudTabOrdering.TF);
             if (color.a == 0)
                 color.a = 1;
         }
@@ -58,7 +57,7 @@ namespace Unity.Robotics.MessageVisualizers
             drawing.Clear();
             EnsureSettings(stream);
             if (m_ShowAxes[stream])
-                MessageVisualizations.DrawAxisVectors<FLU>(drawing, Vector3.zero.To<FLU>(), Quaternion.identity.To<FLU>(), axesScale, false);
+                MessageVisualizationUtils.DrawAxisVectors<FLU>(drawing, Vector3.zero.To<FLU>(), Quaternion.identity.To<FLU>(), axesScale, false);
 
             if (m_ShowLinks[stream])
                 drawing.DrawLine(Quaternion.Inverse(frame.rotation) * -frame.translation, Vector3.zero, color, lineThickness);
@@ -150,7 +149,7 @@ namespace Unity.Robotics.MessageVisualizers
 
             if (GUI.changed || globalChange)
             {
-                TFSystem.UpdateVisualization(stream);
+                TFSystem.instance.NotifyAllChanged(stream);
             }
 
             if (m_ShowExpanded[stream])
